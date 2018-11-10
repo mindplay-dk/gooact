@@ -1,12 +1,28 @@
 /* Gooact by SweetPalma, 2018. All rights reserved. */
-(() => { 'use strict';
 
-const createElement = (type, props, ...children) => {
-    if (props === null) props = {};
-    return {type, props, children};
-};
+type DOMElement = (HTMLElement /* | SVGElement */) & {
+    __gooactKey: string;
+    __gooactHandlers: any;
+    __gooactInstance: Component;
+}
 
-const setAttribute = (dom, key, value) => {
+interface Props {
+    [name: string]: any
+}
+
+interface VNode {
+    type: string | Function;
+    props: Props;
+    children: VChild[];
+}
+
+type VChild = VNode | string | number | undefined;
+
+function createElement(type: string, props: Props, ...children: VChild[]): VNode {
+    return { type, props: props || {}, children };
+}
+
+function setAttribute(dom: DOMElement, key: string, value: any) {
     if (typeof value == 'function' && key.startsWith('on')) {
         const eventType = key.slice(2).toLowerCase();
         dom.__gooactHandlers = dom.__gooactHandlers || {};
@@ -24,12 +40,15 @@ const setAttribute = (dom, key, value) => {
     } else if (typeof value != 'object' && typeof value != 'function') {
         dom.setAttribute(key, value);
     }
-};
+}
 
-const render = (vdom, parent=null) => {
-    const mount = parent ? (el => parent.appendChild(el)) : (el => el);
+export function render(vdom: VChild, parent: DOMElement = null): DOMElement {
+    const mount: { <T extends Node>(el: T): T } = parent
+        ? (el => parent.appendChild(el))
+        : (el => el);
+
     if (typeof vdom == 'string' || typeof vdom == 'number') {
-        return mount(document.createTextNode(vdom));
+        return mount(document.createTextNode(vdom as string));
     } else if (typeof vdom == 'boolean' || vdom === null) {
         return mount(document.createTextNode(''));
     } else if (typeof vdom == 'object' && typeof vdom.type == 'function') {
@@ -42,10 +61,13 @@ const render = (vdom, parent=null) => {
     } else {
         throw new Error(`Invalid VDOM: ${vdom}.`);
     }
-};
+}
 
-const patch = (dom, vdom, parent=dom.parentNode) => {
-    const replace = parent ? el => (parent.replaceChild(el, dom) && el) : (el => el);
+function patch(dom: DOMElement, vdom: VChild, parent: DOMElement = dom.parentNode as DOMElement) {
+    const replace: { (el: DOMElement): DOMElement } = parent
+        ? el => (parent.replaceChild(el, dom) && el)
+        : (el => el);
+    
     if (typeof vdom == 'object' && typeof vdom.type == 'function') {
         return Component.patch(dom, vdom, parent);
     } else if (typeof vdom != 'object' && dom instanceof Text) {
@@ -55,22 +77,26 @@ const patch = (dom, vdom, parent=dom.parentNode) => {
     } else if (typeof vdom == 'object' && dom.nodeName != vdom.type.toUpperCase()) {
         return replace(render(vdom, parent));
     } else if (typeof vdom == 'object' && dom.nodeName == vdom.type.toUpperCase()) {
-        const pool = {};
-        const active = document.activeElement;
+        const pool: { [key: string]: DOMElement } = {};
+        const active = document.activeElement as DOMElement;
+
         [].concat(...dom.childNodes).map((child, index) => {
             const key = child.__gooactKey || `__index_${index}`;
             pool[key] = child;
         });
+
         [].concat(...vdom.children).map((child, index) => {
             const key = child.props && child.props.key || `__index_${index}`;
             dom.appendChild(pool[key] ? patch(pool[key], child) : render(child, dom));
             delete pool[key];
         });
+
         for (const key in pool) {
             const instance = pool[key].__gooactInstance;
             if (instance) instance.componentWillUnmount();
             pool[key].remove();
         }
+
         for (const attr of dom.attributes) dom.removeAttribute(attr.name);
         for (const prop in vdom.props) setAttribute(dom, prop, vdom.props[prop]);
         active.focus();
@@ -78,29 +104,35 @@ const patch = (dom, vdom, parent=dom.parentNode) => {
     }
 };
 
-class Component {
-    constructor(props) {
+export abstract class Component<TProps extends Props = Props, TState extends Props = Props> {
+    props: TProps;
+    state!: TState;
+    base!: DOMElement;
+
+    constructor(props: TProps = {}) {
         this.props = props || {};
-        this.state = null;
     }
 
-    static render(vdom, parent=null) {
-        const props = Object.assign({}, vdom.props, {children: vdom.children});
+    static render(vdom: VNode, parent: DOMElement = null) {
+        const props = Object.assign({}, vdom.props, { children: vdom.children });
+
         if (Component.isPrototypeOf(vdom.type)) {
-            const instance = new (vdom.type)(props);
+            const instance = new (vdom.type)(props) as Component;
+
             instance.componentWillMount();
             instance.base = render(instance.render(), parent);
             instance.base.__gooactInstance = instance;
             instance.base.__gooactKey = vdom.props.key;
             instance.componentDidMount();
+
             return instance.base;
         } else {
             return render(vdom.type(props), parent);
         }
     }
 
-    static patch(dom, vdom, parent=dom.parentNode) {
-        const props = Object.assign({}, vdom.props, {children: vdom.children});
+    static patch(dom: DOMElement, vdom: VNode, parent = dom.parentNode) {
+        const props = Object.assign({}, vdom.props, { children: vdom.children });
         if (dom.__gooactInstance && dom.__gooactInstance.constructor == vdom.type) {
             dom.__gooactInstance.componentWillReceiveProps(props);
             dom.__gooactInstance.props = props;
@@ -108,13 +140,16 @@ class Component {
         } else if (Component.isPrototypeOf(vdom.type)) {
             const ndom = Component.render(vdom, parent);
             return parent ? (parent.replaceChild(ndom, dom) && ndom) : (ndom);
-        } else if (!Component.isPrototypeOf(vdom.type)) {
+        } else if (typeof vdom.type === "function") {
             return patch(dom, vdom.type(props), parent);
         }
     }
 
-    setState(next) {
+    abstract render(): VNode;
+
+    setState(next: TState) {
         const compat = (a) => typeof this.state == 'object' && typeof a == 'object';
+
         if (this.base && this.shouldComponentUpdate(this.props, next)) {
             const prevState = this.state;
             this.componentWillUpdate(this.props, next);
@@ -126,35 +161,19 @@ class Component {
         }
     }
 
-    shouldComponentUpdate(nextProps, nextState) {
+    shouldComponentUpdate(nextProps: TProps, nextState: TState): boolean {
         return nextProps != this.props || nextState != this.state;
     }
 
-    componentWillReceiveProps(nextProps) {
-        return undefined;
-    }
+    componentWillReceiveProps(nextProps: TProps): void {}
 
-    componentWillUpdate(nextProps, nextState) {
-        return undefined;
-    }
+    componentWillUpdate(nextProps: TProps, nextState: TState): void {}
 
-    componentDidUpdate(prevProps, prevState) {
-        return undefined;
-    }
+    componentDidUpdate(prevProps: TProps, prevState: TState): void {}
 
-    componentWillMount() {
-        return undefined;
-    }
+    componentWillMount(): void {}
 
-    componentDidMount() {
-        return undefined;
-    }
+    componentDidMount(): void {}
 
-    componentWillUnmount() {
-        return undefined;
-    }
-};
-
-if (typeof module != 'undefined') module.exports = {createElement, render, Component};
-if (typeof module == 'undefined') window.Gooact  = {createElement, render, Component};
-})();
+    componentWillUnmount(): void {}
+}
